@@ -1,4 +1,7 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, status
+from pydantic import BaseModel, Field
+from google import genai
+from google.genai import errors
 from config import settings
 
 app = FastAPI(
@@ -7,13 +10,90 @@ app = FastAPI(
     version="0.1.0"
 )
 
-@app.get("/health", status_code=200)
+# Initialize the official Gemini Client once at application startup
+# Reusing the client pool avoids TCP handshake overhead on every request
+client = genai.Client(api_key=settings.GEMINI_API_KEY)
+
+
+class GenerateRequest(BaseModel):
+    prompt: str = Field(..., min_length=1, description="Text prompt sent to Gemini")
+    model: str | None = Field(default=None, description="Optional override for model ID")
+
+
+class GenerateResponse(BaseModel):
+    text: str
+    model: str
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+
+
+# @app.get("/health", status_code=status.HTTP_200_OK)
+# async def health_check():
+#     """Liveness probe endpoint."""
+#     return {
+#         "status": "healthy",
+#         "model": settings.DEFAULT_MODEL
+#     }
+@app.get("/health", status_code=status.HTTP_200_OK)
 async def health_check():
     """
-    Liveness probe endpoint.
-    Used by Docker HEALTHCHECK and load balancers to verify service availability.
+    Evaluates proxy health and readiness state.
     """
+    # Check if critical secrets and configurations are present
+    has_api_key = bool(settings.GEMINI_API_KEY and len(settings.GEMINI_API_KEY) > 10)
+    
+    if not has_api_key:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"status": "unhealthy", "reason": "Missing or invalid API key configuration"}
+        )
+
     return {
         "status": "healthy",
-        "model": settings.DEFAULT_MODEL
+        "model": settings.DEFAULT_MODEL,
+        "environment": "configured"
     }
+
+@app.post("/generate", response_model=GenerateResponse, status_code=status.HTTP_200_OK)
+async def generate_text(request: GenerateRequest):
+    """
+    Proxy endpoint forwarding text prompts to Google Gemini API.
+    Captures raw output and usage metadata.
+    """
+    target_model = request.model or settings.DEFAULT_MODEL
+
+    try:
+        # client.aio provides the asynchronous implementation
+        # Awaiting this prevents blocking the ASGI event loop
+        response = await client.aio.models.generate_content(
+            model=target_model,
+            contents=request.prompt
+        )
+
+        # Extract token usage metadata safely (defaults to 0 if not returned)
+        usage = response.usage_metadata
+        prompt_tokens = usage.prompt_token_count if usage else 0
+        completion_tokens = usage.candidates_token_count if usage else 0
+        total_tokens = usage.total_token_count if usage else 0
+
+        return GenerateResponse(
+            text=response.text or "",
+            model=target_model,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens
+        )
+
+    except errors.APIError as e:
+        # Catches upstream Google API failures (auth errors, quota exceeded, invalid model)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Upstream Gemini API error: {e.message}"
+        )
+    except Exception as e:
+        # Catch unexpected server errors
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Internal proxy error: {str(e)}"
+        )
