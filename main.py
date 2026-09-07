@@ -1,8 +1,9 @@
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI, HTTPException, Response, status
 from pydantic import BaseModel, Field
 from google import genai
 from google.genai import errors
 from config import settings
+from cache import response_cache
 
 app = FastAPI(
     title="Observable Gemini Proxy",
@@ -26,15 +27,9 @@ class GenerateResponse(BaseModel):
     prompt_tokens: int
     completion_tokens: int
     total_tokens: int
+    cached: bool = False
 
 
-# @app.get("/health", status_code=status.HTTP_200_OK)
-# async def health_check():
-#     """Liveness probe endpoint."""
-#     return {
-#         "status": "healthy",
-#         "model": settings.DEFAULT_MODEL
-#     }
 @app.get("/health", status_code=status.HTTP_200_OK)
 async def health_check():
     """
@@ -52,38 +47,55 @@ async def health_check():
     return {
         "status": "healthy",
         "model": settings.DEFAULT_MODEL,
-        "environment": "configured"
+        "environment": "configured",
+        "cached_entries": response_cache.size()
     }
 
 @app.post("/generate", response_model=GenerateResponse, status_code=status.HTTP_200_OK)
-async def generate_text(request: GenerateRequest):
+async def generate_text(request: GenerateRequest, response: Response):
     """
     Proxy endpoint forwarding text prompts to Google Gemini API.
     Captures raw output and usage metadata.
     """
     target_model = request.model or settings.DEFAULT_MODEL
 
+    # 1. Check cache first
+    cached_payload = response_cache.get(model=target_model, prompt=request.prompt)
+    if cached_payload:
+        # Cache HIT: Set header and return instantly without touching Gemini
+        response.headers["X-Cache"] = "HIT"
+        return GenerateResponse(**cached_payload, cached=True)
+
+    # Cache MISS: Prepare to make the actual API call
+    response.headers["X-Cache"] = "MISS"
+
+
     try:
         # client.aio provides the asynchronous implementation
         # Awaiting this prevents blocking the ASGI event loop
-        response = await client.aio.models.generate_content(
+        api_response = await client.aio.models.generate_content(
             model=target_model,
             contents=request.prompt
         )
 
         # Extract token usage metadata safely (defaults to 0 if not returned)
-        usage = response.usage_metadata
+        usage = api_response.usage_metadata
         prompt_tokens = usage.prompt_token_count if usage else 0
         completion_tokens = usage.candidates_token_count if usage else 0
         total_tokens = usage.total_token_count if usage else 0
 
-        return GenerateResponse(
-            text=response.text or "",
-            model=target_model,
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-            total_tokens=total_tokens
-        )
+        payload = {
+            "text": api_response.text or "",
+            "model": target_model,
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": total_tokens
+        }
+
+        # 2. Save fresh result in cache for future identical requests
+        response_cache.set(model=target_model, prompt=request.prompt, data=payload)
+
+        return GenerateResponse(**payload, cached=False)
 
     except errors.APIError as e:
         # Catches upstream Google API failures (auth errors, quota exceeded, invalid model)
