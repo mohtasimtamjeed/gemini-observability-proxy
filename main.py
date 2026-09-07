@@ -1,9 +1,10 @@
-from fastapi import FastAPI, HTTPException, Response, status
+from fastapi import FastAPI, HTTPException, Response, Depends, status
 from pydantic import BaseModel, Field
 from google import genai
 from google.genai import errors
 from config import settings
 from cache import response_cache
+from limiter import check_rate_limit
 
 app = FastAPI(
     title="Observable Gemini Proxy",
@@ -51,10 +52,15 @@ async def health_check():
         "cached_entries": response_cache.size()
     }
 
-@app.post("/generate", response_model=GenerateResponse, status_code=status.HTTP_200_OK)
+@app.post(
+        "/generate",
+        response_model=GenerateResponse,
+        status_code=status.HTTP_200_OK,
+        dependencies=[Depends(check_rate_limit)],
+)
 async def generate_text(request: GenerateRequest, response: Response):
     """
-    Proxy endpoint forwarding text prompts to Google Gemini API.
+    Proxy endpoint forwarding text prompts to Google Gemini API with SHA-256 caching and sliding-window rate limiting.
     Captures raw output and usage metadata.
     """
     target_model = request.model or settings.DEFAULT_MODEL
