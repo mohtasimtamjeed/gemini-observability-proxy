@@ -6,6 +6,7 @@ from google.genai import errors
 from config import settings
 from cache import response_cache
 from limiter import check_rate_limit
+from metrics import GEMINI_TOKENS_TOTAL, CACHE_EVENTS_TOTAL
 
 app = FastAPI(
     title="Observable Gemini Proxy",
@@ -71,7 +72,7 @@ async def health_check():
 )
 async def generate_text(request: GenerateRequest, response: Response):
     """
-    Proxy endpoint forwarding text prompts to Google Gemini API with SHA-256 caching and sliding-window rate limiting.
+    Proxy endpoint forwarding text prompts to Google Gemini API with SHA-256 caching, sliding-window rate limiting and granular Prometheus token/cache telemetry.
     Captures raw output and usage metadata.
     """
     target_model = request.model or settings.DEFAULT_MODEL
@@ -81,10 +82,12 @@ async def generate_text(request: GenerateRequest, response: Response):
     if cached_payload:
         # Cache HIT: Set header and return instantly without touching Gemini
         response.headers["X-Cache"] = "HIT"
+        CACHE_EVENTS_TOTAL.labels(status="hit").inc()
         return GenerateResponse(**cached_payload, cached=True)
 
     # Cache MISS: Prepare to make the actual API call
     response.headers["X-Cache"] = "MISS"
+    CACHE_EVENTS_TOTAL.labels(status="miss").inc()
 
 
     try:
