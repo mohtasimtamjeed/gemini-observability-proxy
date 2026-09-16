@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException, Response, Depends, status
+from prometheus_fastapi_instrumentator import Instrumentator
 from pydantic import BaseModel, Field
 from google import genai
 from google.genai import errors
@@ -11,6 +12,16 @@ app = FastAPI(
     description="Production-ready rate-limited proxy for Gemini API",
     version="0.1.0"
 )
+
+# 1. Initialize Prometheus Instrumentator
+instrumentator = Instrumentator(
+    should_group_status_codes=False,
+    should_ignore_untemplated=True,
+    excluded_handlers=["/metrics", "/health"],
+)
+
+# 2. Instrument the app and expose the /metrics endpoint
+instrumentator.instrument(app).expose(app, endpoint="/metrics")
 
 # Initialize the official Gemini Client once at application startup
 # Reusing the client pool avoids TCP handshake overhead on every request
