@@ -1,3 +1,17 @@
-.env
+# Local Virtual Environment & Python Artifacts
 .venv/
 __pycache__/
+*.py[cod]
+
+# Secrets & Environment Files
+.env
+*.env
+terraform/*.tfvars
+terraform/*.tfvars.json
+
+# Terraform Local State & Binary Cache
+terraform/.terraform/
+terraform/.terraform.lock.hcl
+terraform/*.tfstate
+terraform/*.tfstate.*
+terraform/crash.log
