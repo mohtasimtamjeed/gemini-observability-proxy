@@ -1,0 +1,12 @@
+global:
+  scrape_interval: 5s       # Poll targets every 5 seconds for responsive metrics
+  evaluation_interval: 5s   # Evaluate alerting rules every 5 seconds
+
+scrape_configs:
+  - job_name: "gemini_proxy"
+    metrics_path: "/metrics"
+    static_configs:
+      - targets: ["gemini-proxy:8000"]
+        labels:
+          environment: "production"
+          service: "ai-gateway"
