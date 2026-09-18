@@ -1,0 +1,35 @@
+services:
+  gemini-proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: gemini-proxy:v1
+    container_name: gemini-proxy
+    ports:
+      - "8000:8000"
+    environment:
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - DEFAULT_MODEL=${DEFAULT_MODEL:-gemini-3.6-flash}
+    networks:
+      - proxy-network
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+    networks:
+      - proxy-network
+    depends_on:
+      - gemini-proxy
+    restart: unless-stopped
+
+networks:
+  proxy-network:
+    driver: bridge
